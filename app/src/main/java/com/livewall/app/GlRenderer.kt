@@ -43,8 +43,8 @@ class GlRenderer {
     @Volatile private var frameAvailable = false
 
     private val quad = floatBuffer(4 * 4)
-    private val particleBuf = floatBuffer(Scene.PARTICLE_COUNT * Scene.FLOATS_PER_PARTICLE)
-    private val particleArr = FloatArray(Scene.PARTICLE_COUNT * Scene.FLOATS_PER_PARTICLE)
+    private val particleBuf = floatBuffer(Scene.MAX_PARTICLES * Scene.FLOATS_PER_PARTICLE)
+    private val particleArr = FloatArray(Scene.MAX_PARTICLES * Scene.FLOATS_PER_PARTICLE)
     private val texMatrix = FloatArray(16)
     private val identity = FloatArray(16).also { Matrix.setIdentityM(it, 0) }
 
@@ -150,18 +150,20 @@ class GlRenderer {
                 st.updateTexImage()
             }
             st.getTransformMatrix(texMatrix)
-            drawQuad(videoProgram, GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTex, texMatrix, content, w, h, flipV = true)
+            drawQuad(videoProgram, GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTex, texMatrix, content, w, h, true, scene)
         } else if (photoTex != 0) {
-            drawQuad(photoProgram, GLES20.GL_TEXTURE_2D, photoTex, identity, content, w, h, flipV = false)
+            drawQuad(photoProgram, GLES20.GL_TEXTURE_2D, photoTex, identity, content, w, h, false, scene)
         }
 
         val n = scene.writeParticles(w, h, particleArr)
-        if (n > 0) drawParticles(n, w, h)
+        if (n > 0) drawParticles(n, w, h, scene)
 
         EGL14.eglSwapBuffers(display, eglSurface)
     }
 
-    private fun drawQuad(prog: Int, target: Int, tex: Int, matrix: FloatArray, r: RectF, w: Int, h: Int, flipV: Boolean) {
+    private fun drawQuad(
+        prog: Int, target: Int, tex: Int, matrix: FloatArray, r: RectF, w: Int, h: Int, flipV: Boolean, scene: Scene,
+    ) {
         val l = r.left / w * 2f - 1f
         val rr = r.right / w * 2f - 1f
         val t = 1f - r.top / h * 2f
@@ -186,12 +188,21 @@ class GlRenderer {
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(target, tex)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(prog, "uS"), 0)
+        val e = scene.effects
+        val f = e.filter
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uSat"), f.saturation)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uContrast"), f.contrast)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uLift"), f.lift)
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(prog, "uTint"), f.r, f.g, f.b)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uBright"), e.brightness * scene.fade)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uVignette"), if (e.vignette) 0.75f else 0f)
+        GLES20.glUniform2f(GLES20.glGetUniformLocation(prog, "uRes"), w.toFloat(), h.toFloat())
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         GLES20.glDisableVertexAttribArray(aPos)
         GLES20.glDisableVertexAttribArray(aUv)
     }
 
-    private fun drawParticles(n: Int, w: Int, h: Int) {
+    private fun drawParticles(n: Int, w: Int, h: Int, scene: Scene) {
         // Convert pixel positions to clip space and clamp sizes to what the GPU supports.
         for (i in 0 until n) {
             val o = i * Scene.FLOATS_PER_PARTICLE
@@ -207,6 +218,8 @@ class GlRenderer {
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_COLOR)
         val prog = particleProgram
         GLES20.glUseProgram(prog)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uStyle"), scene.effects.style.ordinal.toFloat())
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uGain"), scene.fade * scene.effects.brightness.coerceAtLeast(0.5f))
         val stride = Scene.FLOATS_PER_PARTICLE * 4
         val aPos = GLES20.glGetAttribLocation(prog, "aPos")
         val aSize = GLES20.glGetAttribLocation(prog, "aSize")
@@ -284,18 +297,40 @@ class GlRenderer {
             }
         """
 
+        // Colour grading shared by photos and videos: saturation, contrast, lift, tint, brightness, vignette.
+        private const val GRADE = """
+            uniform float uSat;
+            uniform float uContrast;
+            uniform float uLift;
+            uniform vec3 uTint;
+            uniform float uBright;
+            uniform float uVignette;
+            uniform vec2 uRes;
+            vec4 grade(vec4 c) {
+                float l = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+                vec3 col = mix(vec3(l), c.rgb, uSat);
+                col = (col - 0.5) * uContrast + 0.5 + uLift;
+                col *= uTint;
+                vec2 p = gl_FragCoord.xy / uRes - 0.5;
+                col *= uBright * clamp(1.0 - uVignette * dot(p, p) * 2.0, 0.0, 1.0);
+                return vec4(clamp(col, 0.0, 1.0), 1.0);
+            }
+        """
+
         private const val PHOTO_FS = """
             precision mediump float;
             varying vec2 vUv;
             uniform sampler2D uS;
-            void main() { gl_FragColor = texture2D(uS, vUv); }
+        """ + GRADE + """
+            void main() { gl_FragColor = grade(texture2D(uS, vUv)); }
         """
 
         private const val VIDEO_FS = """#extension GL_OES_EGL_image_external : require
             precision mediump float;
             varying vec2 vUv;
             uniform samplerExternalOES uS;
-            void main() { gl_FragColor = texture2D(uS, vUv); }
+        """ + GRADE + """
+            void main() { gl_FragColor = grade(texture2D(uS, vUv)); }
         """
 
         private const val PARTICLE_VS = """
@@ -310,17 +345,43 @@ class GlRenderer {
             }
         """
 
-        // A soft tinted halo around a small white-hot core; vColor.a is the twinkle intensity.
+        // One shape per ParticleStyle (uStyle is its ordinal); vColor.a is the twinkle intensity.
         private const val PARTICLE_FS = """
             precision mediump float;
             varying vec4 vColor;
+            uniform float uStyle;
+            uniform float uGain;
             void main() {
-                float d = length(gl_PointCoord - vec2(0.5)) * 2.0;
+                vec2 q = gl_PointCoord - vec2(0.5);
+                float d = length(q) * 2.0;
                 if (d > 1.0) discard;
-                float halo = exp(-d * d * 6.0) * 0.45;
-                float core = exp(-d * d * 70.0);
-                vec3 c = vColor.rgb * halo + vec3(core);
-                gl_FragColor = vec4(c * vColor.a, 1.0);
+                vec3 c;
+                if (uStyle < 0.5) {
+                    // Sparkle: tinted halo around a white-hot core.
+                    c = vColor.rgb * exp(-d * d * 6.0) * 0.45 + vec3(exp(-d * d * 70.0));
+                } else if (uStyle < 1.5) {
+                    // Snow: soft round flake.
+                    c = vColor.rgb * smoothstep(1.0, 0.35, d) * 0.85;
+                } else if (uStyle < 2.5) {
+                    // Rain: thin vertical streak, brightest at the bottom.
+                    float x = abs(q.x) * 2.0;
+                    float streak = smoothstep(0.14, 0.0, x) * smoothstep(-0.5, 0.5, q.y);
+                    c = vColor.rgb * streak;
+                } else if (uStyle < 3.5) {
+                    // Firefly: warm glow with a bright centre.
+                    c = vColor.rgb * (exp(-d * d * 4.0) * 0.6 + exp(-d * d * 30.0));
+                } else if (uStyle < 4.5) {
+                    // Bubble: thin ring with a glint.
+                    float ring = smoothstep(0.16, 0.0, abs(d - 0.82));
+                    float glint = exp(-dot(q + vec2(0.18, 0.18), q + vec2(0.18, 0.18)) * 160.0);
+                    c = vColor.rgb * (ring * 0.7 + 0.06) + vec3(glint * 0.9);
+                } else {
+                    // Star: four-point flare.
+                    vec2 a = abs(q) * 2.0;
+                    float flare = exp(-a.x * 22.0) * exp(-a.y * 3.0) + exp(-a.y * 22.0) * exp(-a.x * 3.0);
+                    c = vColor.rgb * exp(-d * d * 8.0) * 0.35 + vec3(flare * 0.8 + exp(-d * d * 60.0));
+                }
+                gl_FragColor = vec4(c * vColor.a * uGain, 1.0);
             }
         """
     }

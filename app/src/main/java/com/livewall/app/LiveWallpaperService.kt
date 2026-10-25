@@ -1,5 +1,10 @@
 package com.livewall.app
 
+import android.app.WallpaperManager
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -11,12 +16,16 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.media.MediaPlayer
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.service.wallpaper.WallpaperService
 import android.util.Log
 import android.view.Choreographer
+import android.view.MotionEvent
 import android.view.SurfaceHolder
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,6 +33,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.hypot
 
 class LiveWallpaperService : WallpaperService() {
 
@@ -40,6 +50,7 @@ class LiveWallpaperService : WallpaperService() {
         private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         private val handler = Handler(Looper.getMainLooper())
         private val sensors = getSystemService(SENSOR_SERVICE) as SensorManager
+        private val power = getSystemService(POWER_SERVICE) as PowerManager
         private val gravity = sensors.getDefaultSensor(Sensor.TYPE_GRAVITY)
             ?: sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
 
@@ -53,22 +64,53 @@ class LiveWallpaperService : WallpaperService() {
         private var scene: Scene? = null
         private var contentW = 0
         private var contentH = 0
+        private var scrollOffset = 0.5f
         private var player: MediaPlayer? = null
         private var playerReady = false
         private var framePending = false
         private var lastFrameNanos = 0L
 
+        private var lastTapMs = 0L
+        private var lastTapX = 0f
+        private var lastTapY = 0f
+
         // Picking a new wallpaper writes two keys at once; reload once for both.
         private val reloadRunnable = Runnable { reload() }
 
+        private val autoChangeTick = object : Runnable {
+            override fun run() {
+                checkAutoChange()
+                handler.postDelayed(this, AUTO_CHECK_MS)
+            }
+        }
+
+        // "Each wake": switch while the screen is off so the new wallpaper is ready when it turns back on.
+        private val screenOffReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (prefs.autoChange == AutoChange.SCREEN_ON) prefs.next()
+            }
+        }
+        private var receiverRegistered = false
+
         override fun onCreate(surfaceHolder: SurfaceHolder) {
             super.onCreate(surfaceHolder)
+            setTouchEventsEnabled(true)
+            setOffsetNotificationsEnabled(true)
             prefs.raw.registerOnSharedPreferenceChangeListener(this)
+            // Only the real wallpaper rotates; the system preview just shows.
+            if (!isPreview) {
+                ContextCompat.registerReceiver(
+                    this@LiveWallpaperService, screenOffReceiver,
+                    IntentFilter(Intent.ACTION_SCREEN_OFF), ContextCompat.RECEIVER_EXPORTED,
+                )
+                receiverRegistered = true
+            }
         }
 
         override fun onDestroy() {
             prefs.raw.unregisterOnSharedPreferenceChangeListener(this)
-            handler.removeCallbacks(reloadRunnable)
+            if (receiverRegistered) unregisterReceiver(screenOffReceiver)
+            handler.removeCallbacksAndMessages(null)
             teardown()
             renderer.stop()
             scope.cancel()
@@ -103,19 +145,65 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onVisibilityChanged(isVisible: Boolean) {
             visible = isVisible
-            player?.let { if (isVisible && playerReady) it.start() else if (playerReady && it.isPlaying) it.pause() }
+            player?.let { if (isVisible && playerReady) play(it) else if (playerReady && it.isPlaying) it.pause() }
             if (isVisible && scene != null) startAnimating() else stopAnimating()
+            handler.removeCallbacks(autoChangeTick)
+            if (isVisible && !isPreview) handler.post(autoChangeTick)
+        }
+
+        override fun onOffsetsChanged(
+            xOffset: Float, yOffset: Float, xStep: Float, yStep: Float, xPixels: Int, yPixels: Int,
+        ) {
+            // Launchers with a single page report 0; treat that as centred.
+            scrollOffset = if (xStep <= 0f || xStep >= 1f) 0.5f else xOffset
+            scene?.onScroll(scrollOffset)
+        }
+
+        override fun onTouchEvent(event: MotionEvent) {
+            if (event.actionMasked == MotionEvent.ACTION_MOVE || event.actionMasked == MotionEvent.ACTION_DOWN) {
+                scene?.onTouchMove(event.x, event.y)
+            }
+        }
+
+        override fun onCommand(
+            action: String?, x: Int, y: Int, z: Int, extras: Bundle?, resultRequested: Boolean,
+        ): Bundle? {
+            // Taps the launcher didn't use (empty home screen space).
+            if (action == WallpaperManager.COMMAND_TAP) {
+                scene?.onTap(x.toFloat(), y.toFloat())
+                val now = System.currentTimeMillis()
+                val close = hypot(x - lastTapX, y - lastTapY) < width * 0.15f
+                if (prefs.doubleTapNext && now - lastTapMs < DOUBLE_TAP_MS && close) {
+                    lastTapMs = 0L
+                    prefs.next()
+                } else {
+                    lastTapMs = now
+                    lastTapX = x.toFloat()
+                    lastTapY = y.toFloat()
+                }
+            }
+            return null
         }
 
         override fun onSharedPreferenceChanged(sp: SharedPreferences?, key: String?) {
-            if (key in EFFECT_KEYS) {
-                scene?.effects = prefs.effects
-                updateSensor()
-                if (!visible) drawFrame(System.nanoTime())
-            } else {
-                handler.removeCallbacks(reloadRunnable)
-                handler.post(reloadRunnable)
+            when {
+                Prefs.isEffectKey(key) -> {
+                    val effects = prefs.effects
+                    scene?.effects = effects
+                    player?.let { if (playerReady && it.isPlaying) applySpeed(it, effects.videoSpeed) }
+                    updateSensor()
+                    if (!visible) drawFrame(System.nanoTime())
+                }
+                Prefs.isSelectionKey(key) -> {
+                    handler.removeCallbacks(reloadRunnable)
+                    handler.post(reloadRunnable)
+                }
             }
+        }
+
+        private fun checkAutoChange() {
+            val auto = prefs.autoChange
+            if (auto.millis > 0 && System.currentTimeMillis() - prefs.lastChange >= auto.millis) prefs.next()
         }
 
         private fun reload() {
@@ -137,15 +225,18 @@ class LiveWallpaperService : WallpaperService() {
                 }
                 if (selection.kind == Kind.VIDEO) {
                     bitmap?.recycle()
-                    scene = Scene(effects, palette)
+                    scene = newScene(effects, palette)
                     startVideo(selection)
                 } else if (bitmap != null) {
-                    showBitmap(bitmap, Scene(effects, palette))
+                    showBitmap(bitmap, newScene(effects, palette))
                 } else {
                     showMessage("Couldn't open this photo.\nPick another one in Live Wallpapers.")
                 }
             }
         }
+
+        private fun newScene(effects: Effects, palette: List<Int>) =
+            Scene(effects, palette).also { it.onScroll(scrollOffset) }
 
         private fun showBitmap(bitmap: Bitmap, newScene: Scene) {
             renderer.setPhoto(bitmap)
@@ -177,7 +268,7 @@ class LiveWallpaperService : WallpaperService() {
                 }
                 mp.setOnPreparedListener {
                     playerReady = true
-                    if (visible) it.start()
+                    if (visible) play(it)
                 }
                 mp.setOnErrorListener { _, what, extra ->
                     Log.w(TAG, "video error $what/$extra")
@@ -191,6 +282,18 @@ class LiveWallpaperService : WallpaperService() {
                 Log.w(TAG, "video setup failed", e)
                 showMessage("Couldn't open this video.\nPick another one in Live Wallpapers.")
             }
+        }
+
+        private fun play(mp: MediaPlayer) {
+            // Speed is set before start(): on some versions changing it on a paused player starts playback.
+            applySpeed(mp, scene?.effects?.videoSpeed ?: 1f)
+            mp.start()
+        }
+
+        private fun applySpeed(mp: MediaPlayer, speed: Float) {
+            runCatching {
+                if (mp.playbackParams.speed != speed) mp.playbackParams = mp.playbackParams.setSpeed(speed)
+            }.onFailure { Log.w(TAG, "speed $speed not supported", it) }
         }
 
         private fun showMessage(text: String) {
@@ -208,7 +311,8 @@ class LiveWallpaperService : WallpaperService() {
                     drawText(line, width / 2f, height / 2f + i * paint.textSize * 1.4f, paint)
                 }
             }
-            showBitmap(bitmap, Scene(Effects(zoom = false, tilt = false, particles = false), Scene.DEFAULT_PALETTE))
+            val still = Effects(zoom = false, tilt = false, scroll = false, touch = false, particles = false)
+            showBitmap(bitmap, Scene(still, Scene.DEFAULT_PALETTE))
         }
 
         private fun teardown() {
@@ -239,10 +343,9 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun doFrame(frameTimeNanos: Long) {
             framePending = false
-            if (!visible || scene == null) return
-            // Photos move slowly, so ~30 fps is plenty and halves the battery cost; videos get every vsync.
-            val interval = if (renderer.hasVideo) 0L else PHOTO_FRAME_NANOS
-            if (frameTimeNanos - lastFrameNanos >= interval) {
+            val s = scene ?: return
+            if (!visible) return
+            if (frameTimeNanos - lastFrameNanos >= frameInterval(s.effects)) {
                 lastFrameNanos = frameTimeNanos
                 drawFrame(frameTimeNanos)
             }
@@ -250,10 +353,17 @@ class LiveWallpaperService : WallpaperService() {
             Choreographer.getInstance().postFrameCallback(this)
         }
 
+        /** Videos get every vsync; photos move slowly, so 30 fps is plenty unless "smooth" is on. */
+        private fun frameInterval(e: Effects): Long = when {
+            e.batterySaver && power.isPowerSaveMode -> SAVER_FRAME_NANOS
+            renderer.hasVideo || e.smooth -> 0L
+            else -> PHOTO_FRAME_NANOS
+        }
+
         private fun drawFrame(nanos: Long) {
             val s = scene ?: return
             if (width == 0 || contentW == 0) return
-            s.step(nanos)
+            s.step(nanos, width, height)
             s.contentRect(width, height, contentW, contentH, contentRect)
             renderer.render(width, height, contentRect, s)
         }
@@ -275,6 +385,8 @@ class LiveWallpaperService : WallpaperService() {
     companion object {
         private const val TAG = "LiveWall"
         private const val PHOTO_FRAME_NANOS = 32_000_000L
-        private val EFFECT_KEYS = setOf("zoom", "tilt", "particles")
+        private const val SAVER_FRAME_NANOS = 66_000_000L
+        private const val DOUBLE_TAP_MS = 350L
+        private const val AUTO_CHECK_MS = 30_000L
     }
 }

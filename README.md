@@ -1,11 +1,18 @@
 # Live Wallpapers
 
-An Android live wallpaper app. Pick a built-in wallpaper, any photo, or any video from your phone and it becomes a moving wallpaper:
+An Android live wallpaper app. Pick a built-in wallpaper, any photo, or any video from your phone and it becomes a moving wallpaper.
 
-- **Videos** loop silently, cropped to fill the screen.
-- **Photos** come alive with a slow breathing zoom, 3D tilt parallax that follows your phone, and glowing particles tinted with the picture's own colours. The effects can be switched on or off and also work over videos.
+- **Videos** loop silently, cropped to fill the screen, at 0.5x–2x speed.
+- **Particles:** sparkles, snow, rain, fireflies, bubbles or stars, with amount and speed controls. Sparkle, star and bubble colours come from the picture itself.
+- **Touch:** tap an empty spot for a burst of light; drag to scatter particles.
+- **Motion:** a breathing zoom, 3D tilt parallax that follows the phone, and sliding as you swipe between home screen pages, each with its own strength control.
+- **Look:** Vivid, B&W, Warm, Cool, Dreamy, Noir and Sunset filters, plus brightness and a vignette.
+- **My collection:** photos and videos you add are kept for later. Long-press one to remove it.
+- **Auto change:** a new wallpaper each time the screen turns on, or every 5 min, 15 min, 1 hour or 1 day, in order or shuffled. You can also double-tap the home screen for the next one.
+- **Transitions:** each new wallpaper fades in.
+- **Battery:** photos animate at 30 fps (60 fps optional) and slow down further in Battery Saver. Everything pauses while the wallpaper is hidden.
 
-Rendering is OpenGL ES 2. Photos animate at about 30 fps and videos at their own frame rate, and everything pauses while the wallpaper is hidden, to save battery.
+Every effect works on photos and on videos. Rendering is OpenGL ES 2.
 
 ## Install
 

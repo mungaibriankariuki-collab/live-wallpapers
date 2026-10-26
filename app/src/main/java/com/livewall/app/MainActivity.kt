@@ -306,7 +306,7 @@ private fun Home(onOpenGallery: () -> Unit) {
             Hint(
                 when (autoChange) {
                     AutoChange.OFF -> "The wallpaper stays as you set it."
-                    AutoChange.SCREEN_ON -> "A new wallpaper each time you turn the screen on."
+                    AutoChange.SCREEN_ON -> "A new wallpaper every time you unlock. It switches while the screen is off, so you never see it change."
                     else -> "A new wallpaper every ${autoChange.label}, from your built-ins and collection."
                 },
                 Modifier.padding(horizontal = 16.dp),

@@ -48,7 +48,7 @@ enum class Filter(
 
 enum class AutoChange(val label: String, val millis: Long) {
     OFF("Off", 0),
-    SCREEN_ON("Each wake", -1),
+    SCREEN_ON("Each unlock", -1),
     MIN_5("5 min", 5 * 60_000L),
     MIN_15("15 min", 15 * 60_000L),
     HOUR("1 hour", 60 * 60_000L),

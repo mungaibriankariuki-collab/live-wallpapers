@@ -52,6 +52,14 @@ object Gallery {
     fun selectionFor(context: Context, item: GalleryItem) =
         Selection(Kind.PHOTO, Uri.fromFile(file(context, item)).toString())
 
+    /** Adds downloaded photos to the end of the collection, so shuffle and auto change include them. */
+    fun addToCollection(context: Context, items: List<GalleryItem>) {
+        val prefs = Prefs(context)
+        val current = prefs.collection
+        val added = items.map { selectionFor(context, it) }.filter { it !in current }
+        if (added.isNotEmpty()) prefs.collection = current + added
+    }
+
     /** Fetches the catalogue, falling back to the last copy when offline. */
     suspend fun catalog(context: Context): List<GalleryCategory> = withContext(Dispatchers.IO) {
         val cache = File(context.filesDir, "catalog.json")

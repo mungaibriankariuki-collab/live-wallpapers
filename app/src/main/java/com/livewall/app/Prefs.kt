@@ -6,7 +6,7 @@ import android.net.Uri
 
 enum class Kind { ASSET, PHOTO, VIDEO }
 
-/** What the wallpaper shows: a built-in asset path, or a photo/video content URI picked from the gallery. */
+/** What the wallpaper shows: the bundled starter asset, or a photo/video URI (gallery download or the user's own). */
 data class Selection(val kind: Kind, val value: String) {
     val uri: Uri get() = Uri.parse(value)
 
@@ -83,7 +83,9 @@ class Prefs(context: Context) {
         get() {
             val kind = raw.getString(KEY_KIND, null)?.let { runCatching { Kind.valueOf(it) }.getOrNull() }
             val value = raw.getString(KEY_VALUE, null)
-            return if (kind != null && value != null) Selection(kind, value) else Builtins.all.first().selection
+            // Older versions bundled other assets; anything but the starter is gone now.
+            if (kind == null || value == null || (kind == Kind.ASSET && value != Starter.selection.value)) return Starter.selection
+            return Selection(kind, value)
         }
         set(s) = raw.edit()
             .putString(KEY_KIND, s.kind.name)
@@ -151,8 +153,8 @@ class Prefs(context: Context) {
 
     val lastChange: Long get() = raw.getLong(KEY_LAST_CHANGE, 0L)
 
-    /** Built-ins plus the collection, in the order they're shown. */
-    val playlist: List<Selection> get() = Builtins.all.map { it.selection } + collection
+    /** What auto change and double-tap cycle through: the collection, in the order it's shown. */
+    val playlist: List<Selection> get() = collection
 
     /** Moves to the next wallpaper in the playlist (or a random different one when shuffling). */
     fun next() {
@@ -183,16 +185,10 @@ class Prefs(context: Context) {
     }
 }
 
-data class Builtin(val name: String, val path: String) {
-    val selection get() = Selection(Kind.ASSET, path)
-}
-
-object Builtins {
-    val all = listOf(
-        Builtin("Blue flowers", "wallpapers/kingdom-hearts-blue-flowers.jpg"),
-        Builtin("Scales", "wallpapers/lizard-scales.jpg"),
-        Builtin("Te Fiti", "wallpapers/moana-te-fiti.jpg"),
-        Builtin("Fire fox", "wallpapers/glowing-fox.jpg"),
-        Builtin("Land of the Dead", "wallpapers/coco-land-of-the-dead.jpg"),
-    )
+/**
+ * Shown until the user picks something: "Milky Way over Hochkalter & Hintersee" by Anil Öztas,
+ * CC BY 4.0, from Wikimedia Commons (also in the 4K Gallery).
+ */
+object Starter {
+    val selection = Selection(Kind.ASSET, "starter.jpg")
 }

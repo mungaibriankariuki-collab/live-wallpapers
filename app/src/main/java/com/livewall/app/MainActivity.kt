@@ -178,7 +178,7 @@ private fun Home(onOpenGallery: () -> Unit) {
                 context.contentResolver.releasePersistableUriPermission(s.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
         }
-        if (selection == s) choose(Builtins.all.first().selection)
+        if (selection == s) choose(collection.firstOrNull() ?: Starter.selection)
         Toast.makeText(context, "Removed from your collection", Toast.LENGTH_SHORT).show()
     }
 
@@ -212,13 +212,6 @@ private fun Home(onOpenGallery: () -> Unit) {
             }
         }
 
-        SectionTitle("Built-in")
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(end = 8.dp)) {
-            items(Builtins.all) { b ->
-                Tile(b.selection, b.name, selected = selection == b.selection, onClick = { choose(b.selection) })
-            }
-        }
-
         Card(
             onClick = onOpenGallery,
             colors = CardDefaults.cardColors(containerColor = Accent.copy(alpha = 0.14f)),
@@ -249,7 +242,7 @@ private fun Home(onOpenGallery: () -> Unit) {
             }
         }
         if (collection.isEmpty()) {
-            Hint("Photos and videos you add are kept here. Long-press one to remove it.")
+            Hint("Download from the 4K Gallery or add your own. Everything here is shuffled by Auto change. Long-press to remove.")
         } else {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(end = 8.dp)) {
                 items(collection, key = { it.value }) { s ->
@@ -307,7 +300,7 @@ private fun Home(onOpenGallery: () -> Unit) {
                 when (autoChange) {
                     AutoChange.OFF -> "The wallpaper stays as you set it."
                     AutoChange.SCREEN_ON -> "A new wallpaper every time you unlock. It switches while the screen is off, so you never see it change."
-                    else -> "A new wallpaper every ${autoChange.label}, from your built-ins and collection."
+                    else -> "A new wallpaper every ${autoChange.label}, from your collection."
                 },
                 Modifier.padding(horizontal = 16.dp),
             )

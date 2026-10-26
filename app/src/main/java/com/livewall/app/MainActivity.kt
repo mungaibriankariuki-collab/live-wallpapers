@@ -41,7 +41,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.SkipNext
@@ -62,9 +64,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -91,7 +96,26 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = Color.Black, surface = Color.Black)) {
-                Surface(Modifier.fillMaxSize(), color = Color.Black) { Home() }
+                Surface(Modifier.fillMaxSize(), color = Color.Black) {
+                    var showGallery by rememberSaveable { mutableStateOf(false) }
+                    // Bumped when the gallery adds a wallpaper so Home re-reads its state.
+                    var refresh by remember { mutableIntStateOf(0) }
+                    if (showGallery) {
+                        val context = LocalContext.current
+                        GalleryScreen(
+                            onBack = { showGallery = false },
+                            onUse = { s ->
+                                val prefs = Prefs(context)
+                                prefs.collection = listOf(s) + prefs.collection.filter { it != s }
+                                prefs.selection = s
+                                refresh++
+                                showGallery = false
+                            },
+                        )
+                    } else {
+                        key(refresh) { Home(onOpenGallery = { showGallery = true }) }
+                    }
+                }
             }
         }
     }
@@ -103,7 +127,7 @@ private val Outline = Color(0xFF2A2D35)
 private val VideoSpeeds = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
 
 @Composable
-private fun Home() {
+private fun Home(onOpenGallery: () -> Unit) {
     val context = LocalContext.current
     val prefs = remember { Prefs(context) }
     var selection by remember { mutableStateOf(prefs.selection) }
@@ -145,9 +169,14 @@ private fun Home() {
     fun remove(s: Selection) {
         collection = collection.filter { it != s }
         prefs.collection = collection
-        // Gallery picks hold a long-lived read grant; give it back once nothing uses it.
-        runCatching {
-            context.contentResolver.releasePersistableUriPermission(s.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val owned = Gallery.ownsFile(context, s)
+        if (owned != null) {
+            owned.delete()
+        } else {
+            // Gallery picks hold a long-lived read grant; give it back once nothing uses it.
+            runCatching {
+                context.contentResolver.releasePersistableUriPermission(s.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
         }
         if (selection == s) choose(Builtins.all.first().selection)
         Toast.makeText(context, "Removed from your collection", Toast.LENGTH_SHORT).show()
@@ -190,6 +219,22 @@ private fun Home() {
             }
         }
 
+        Card(
+            onClick = onOpenGallery,
+            colors = CardDefaults.cardColors(containerColor = Accent.copy(alpha = 0.14f)),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Collections, null, tint = Accent, modifier = Modifier.size(32.dp))
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("4K Gallery", fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                    Text("102 photos: space, landscapes, wildlife and more", fontSize = 13.sp, color = Color.LightGray)
+                }
+                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = Accent)
+            }
+        }
+
         SectionTitle("My collection")
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedButton(onClick = { pickPhoto.launch(arrayOf("image/*")) }, modifier = Modifier.weight(1f)) {
@@ -209,7 +254,11 @@ private fun Home() {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(end = 8.dp)) {
                 items(collection, key = { it.value }) { s ->
                     Tile(
-                        s, if (s.kind == Kind.VIDEO) "Video" else "Photo",
+                        s, when {
+                            s.kind == Kind.VIDEO -> "Video"
+                            Gallery.ownsFile(context, s) != null -> "4K"
+                            else -> "Photo"
+                        },
                         selected = selection == s, onClick = { choose(s) }, onLongClick = { remove(s) },
                     )
                 }

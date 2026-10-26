@@ -2,6 +2,7 @@
 
 An Android live wallpaper app. Pick a built-in wallpaper, any photo, or any video from your phone and it becomes a moving wallpaper.
 
+- **4K Gallery:** 102 free-licence portrait photos in 11 categories (space, landscapes, sky & weather, birds, insects, wildlife, flowers, fungi, ceilings & interiors, architecture, cities), downloaded only when you pick one.
 - **Videos** loop silently, cropped to fill the screen, at 0.5x–2x speed.
 - **Particles:** sparkles, snow, rain, fireflies, bubbles or stars, with amount and speed controls. Sparkle, star and bubble colours come from the picture itself.
 - **Touch:** tap an empty spot for a burst of light; drag to scatter particles.
@@ -23,6 +24,10 @@ Open the app, choose a wallpaper, tap **Set as live wallpaper**, then **Set wall
 ## Build
 
 The APK is built by GitHub Actions on every push to `main` (`.github/workflows/build.yml`) and published as a release. Signing uses the `KEYSTORE_BASE64` and `KEYSTORE_PASSWORD` repo secrets.
+
+## 4K Gallery
+
+The gallery photos are Wikimedia Commons *Featured pictures*, limited to public domain, CC0, CC BY and CC BY-SA licences. They're portrait shots at least 2160 px wide. They are hosted as assets of the `gallery-v1` release, together with `catalog.json`, which lists every photo's author, licence and source page. The app shows these credits on each photo. To rebuild the gallery, run `tools/build_catalog.py` and then `tools/finalize.py`.
 
 ## Built-in images
 
